@@ -1,0 +1,80 @@
+---
+- name: Prep Proxmox Pixelmon
+  hosts: pve
+  gather_facts: false
+  tasks:
+    - name: Créer les conteneurs Pixelmon
+      shell: |
+        pct status {{ item.vmid }} >/dev/null 2>&1 || \
+        pct create {{ item.vmid }} {{ ct_template }} \
+          --hostname {{ item.name }} \
+          --net0 name=eth0,bridge=vmbr0,gw=10.2.0.254,ip={{ item.ip }}/16 \
+          --rootfs local:10 \
+          --password {{ ct_password }} \
+          --memory {{ container_memory }} \
+          --cores {{ container_cores }} \
+          --unprivileged 0 \
+          --onboot 1 \
+          --start 1
+      loop:
+        - { vmid: 502, name: 'mc-pixel-502', ip: '10.2.0.50' }
+        - { vmid: 503, name: 'mc-pixel-503', ip: '10.2.0.51' }
+
+    - name: Pause boot
+      pause:
+        seconds: 10
+
+    - name: Configurer SSH via Proxmox
+      shell: |
+        pct exec {{ item.vmid }} -- bash -c "
+        apt-get update &&
+        apt-get install -y openssh-server sudo curl wget screen &&
+        sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config &&
+        systemctl restart ssh
+        "
+      loop:
+        - { vmid: 502 }
+        - { vmid: 503 }
+
+- name: Install Pixelmon Server
+  hosts: minecraft
+  gather_facts: false
+  tasks:
+    - name: Installer Java 17 (Compatible 1.16.5)
+      apt:
+        name: openjdk-17-jre-headless
+        update_cache: yes
+
+    - name: Créer dossier serveur et mods
+      file:
+        path: "/opt/pixelmon/mods"
+        state: directory
+
+    - name: Télécharger Forge Installer 1.16.5
+      get_url:
+        url: "https://maven.minecraftforge.net/net/minecraftforge/forge/1.16.5-36.2.34/forge-1.16.5-36.2.34-installer.jar"
+        dest: /opt/pixelmon/forge-installer.jar
+
+    - name: Installer Forge Server
+      shell: "cd /opt/pixelmon && java -jar forge-installer.jar --installServer"
+      args:
+        creates: "/opt/pixelmon/forge-1.16.5-36.2.34-universal.jar"
+
+    - name: Envoyer le mod depuis la Debian vers les conteneurs
+      copy:
+        src: "/tmp/pixelmon.jar"
+        dest: "/opt/pixelmon/mods/pixelmon.jar"
+
+    - name: Accepter EULA
+      copy:
+        content: "eula=true"
+        dest: /opt/pixelmon/eula.txt
+
+    - name: Créer le script de démarrage
+      copy:
+        dest: /opt/pixelmon/start.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          cd /opt/pixelmon
+          screen -S pixelmon -dm java -Xms2G -Xmx4G -jar forge-1.16.5-36.2.34-universal.jar nogui

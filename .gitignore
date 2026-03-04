@@ -1,0 +1,5 @@
+*.log
+*.retry
+.DS_Store
+# Si tu as des fichiers de variables sensibles
+group_vars/vault.yml
